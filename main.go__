@@ -1,0 +1,66 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/benbjohnson/clock"
+	"github.com/cenkalti/backoff"
+	"github.com/mercari/go-circuitbreaker"
+)
+
+var cb *circuitbreaker.CircuitBreaker
+
+func init() {
+	cb = circuitbreaker.New(
+
+		circuitbreaker.WithClock(clock.New()),
+		circuitbreaker.WithFailOnContextCancel(true),
+		circuitbreaker.WithFailOnContextDeadline(true),
+		circuitbreaker.WithHalfOpenMaxSuccesses(10),
+		circuitbreaker.WithOpenTimeoutBackOff(backoff.NewExponentialBackOff()),
+		circuitbreaker.WithOpenTimeout(10*time.Second),
+		circuitbreaker.WithCounterResetInterval(10*time.Second),
+		// we also have NewTripFuncThreshold and NewTripFuncConsecutiveFailures
+		circuitbreaker.WithTripFunc(circuitbreaker.NewTripFuncFailureRate(10, 0.4)),
+		circuitbreaker.WithOnStateChangeHookFn(func(from, to circuitbreaker.State) {
+			log.Printf("state changed from %s to %s\n", from, to)
+		}),
+	)
+
+}
+
+func remoteCall() ([]byte, error) {
+	resp, err := http.Get("http://localhost:8080/meltem")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func main() {
+	for i := 0; i < 100; i++ {
+		/*
+			b, err := myremoteCall()
+			if err != nil {
+				log.Print(err)
+			} else {
+				fmt.Println(string(b))
+			}
+		*/
+		ctx := context.Background()
+		b, err := cb.Do(ctx, func() (interface{}, error) {
+			return remoteCall()
+		})
+		if err != nil {
+			log.Print(err)
+		} else {
+			fmt.Println(string(b.([]byte)))
+		}
+	}
+}
